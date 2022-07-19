@@ -8,6 +8,18 @@
 #include <netinet/in.h>
 #include <fcntl.h>
 
+
+typedef struct		s_cli
+{
+	int				id;
+	int				fd;
+	char 			*buff;
+	struct s_cli	*next;
+}					t_cli;
+
+t_cli *g_list = NULL;
+fd_set master, reads, writes;
+
 int extract_message(char **buf, char **msg)
 {
 	char	*newbuf;
@@ -55,20 +67,12 @@ char *str_join(char *buf, char *add)
 	return (newbuf);
 }
 
-typedef struct		s_cli
+void fatal_err(int n)
 {
-	int				id;
-	int				fd;
-	char 			*buff;
-	struct s_cli	*next;
-}					t_cli;
-
-t_cli *g_list = NULL;
-fd_set master, reads, writes;
-
-void fatal_err()
-{
-	write(2, "Fatal error\n", 12);
+	if (!n)
+		write(2, "Fatal error\n", 12);
+	else
+		write(2, "Wrong number of arguments\n", 26);
 	exit(1);
 }
 
@@ -78,7 +82,7 @@ void add_cli(int fd, int *id)
 	t_cli *new;
 
 	if (!(new = calloc(1, sizeof(t_cli))))
-		fatal_err();
+		fatal_err(0);
 	
 	new->id = (*id)++;
 	new->fd = fd;
@@ -137,7 +141,7 @@ void broadcast(int id, char *msg)
 		if (list->id != id)
 		{
 			if (send(list->fd, msg , strlen(msg), 0) < 0)
-				fatal_err();
+				fatal_err(0);
 		}
 		list = list->next;
 	}
@@ -146,10 +150,7 @@ void broadcast(int id, char *msg)
 int main(int ac, char **av)
 {
 	if (ac!= 2)
-	{
-		write(2, "Wrong number of arguments\n", 26);
-		exit(1);
-	}
+		fatal_err(1);
 	int serverfd, clientfd;
 	struct sockaddr_in servaddr;
 	size_t port;
@@ -162,7 +163,7 @@ int main(int ac, char **av)
 	servaddr.sin_addr.s_addr = htonl(2130706433); //127.0.0.1
 	servaddr.sin_port = htons(port);
 	if ((serverfd = socket(AF_INET, SOCK_STREAM, 0)) < 0 || bind(serverfd, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0 || listen(serverfd, 10) < 0 )
-		fatal_err();
+		fatal_err(0);
 	FD_ZERO(&master);
 	FD_SET(serverfd , &master);
 	int max = serverfd;
@@ -180,7 +181,7 @@ int main(int ac, char **av)
 				if (i == serverfd)
 				{
 					if ((clientfd = accept(serverfd, NULL, NULL)) < 0)
-						fatal_err();
+						fatal_err(0);
 					fcntl(clientfd, F_SETFL, O_NONBLOCK);
 					FD_SET(clientfd, &master);
 					max = clientfd > max ? clientfd : max;
@@ -211,14 +212,14 @@ int main(int ac, char **av)
 					{
 						char *line = 0;
 						if (!(line = malloc(sizeof(char) * (strlen(msg) + 15))))
-							fatal_err();
+							fatal_err(0);
 						sprintf(line, "client %d: %s", c->id, msg);
 						broadcast(c->id, line);
 						free(msg);
 						free(line);
 					}
 					if (ret < 0)
-						fatal_err();
+						fatal_err(0);
 				}
 			}
 		}
