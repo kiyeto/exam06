@@ -1,30 +1,28 @@
-#include <unistd.h>
-#include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 #include <netdb.h>
 #include <sys/socket.h>
-#include <sys/select.h>
 #include <netinet/in.h>
-#include <fcntl.h>
-
+#include <fcntl.h>	// for test
 
 typedef struct		s_cli
 {
 	int				id;
 	int				fd;
-	char 			*buff;
+	char			*buf;
 	struct s_cli	*next;
 }					t_cli;
 
-t_cli *g_list = NULL;
-fd_set master, reads, writes;
+t_cli	*clients = 0;
+fd_set	master, reads, writes;
+int		id = 0;
 
 int extract_message(char **buf, char **msg)
 {
 	char	*newbuf;
 	int	i;
-
 	*msg = 0;
 	if (*buf == 0)
 		return (0);
@@ -67,162 +65,128 @@ char *str_join(char *buf, char *add)
 	return (newbuf);
 }
 
-void fatal_err(int n)
+void fatal_err(int x)
 {
-	if (!n)
-		write(2, "Fatal error\n", 12);
+	if (!x)
+		write(2, "Fatal error\n", strlen("Fatal error\n"));	
 	else
-		write(2, "Wrong number of arguments\n", 26);
+		write(2, "Wrong number of arguments\n", strlen("Wrong number of arguments\n"));	
 	exit(1);
 }
 
-void add_cli(int fd, int *id)
+void add_cli(int fd, int id)
 {
-	t_cli *list = g_list;
-	t_cli *new;
-
+	t_cli *copy, *new;
+	copy = clients;
 	if (!(new = calloc(1, sizeof(t_cli))))
 		fatal_err(0);
-	
-	new->id = (*id)++;
+	new->id = id;
 	new->fd = fd;
-	new->buff = 0;
-	if (!g_list)
-		g_list = new;
+	new->buf = 0;
+	new->next = 0;
+	if (!clients)
+		clients = new;
 	else
 	{
-		while (list->next)
-			list = list->next;
-		list->next = new;
+		while (copy->next)
+			copy = copy->next;
+		copy->next = new;
 	}
 }
 
 void rm_cli(t_cli **c)
 {
-	t_cli *before = NULL;	
+	t_cli *before;
 	
-	if (g_list == *c)
-		g_list = (*c)->next;
+	if (clients == *c)
+		clients = clients->next;
 	else
 	{
-		before = g_list;
+		before = clients;
 		while (before->next != *c)
 			before = before->next;
 		before->next = (*c)->next;
 	}
 	FD_CLR((*c)->fd, &master);
 	close((*c)->fd);
-	free((*c)->buff);
+	free((*c)->buf);
 	free(*c);
 }
 
-t_cli *find_cli(int i)
+void broadcast(char *msg, int id)
 {
-	t_cli *list_c, *c;
-	list_c = g_list;
-	while (list_c)
+	t_cli *copy = clients;
+	while (copy)
 	{
-		if (list_c->fd == i)
-		{
-			c = list_c;
-			break;
-		}
-		list_c = list_c->next;
-	}
-	return c;
-}
-
-void broadcast(int id, char *msg)
-{
-	t_cli *list = g_list;
-
-	while (list && FD_ISSET(list->fd, &writes))
-	{
-		if (list->id != id)
-		{
-			if (send(list->fd, msg , strlen(msg), 0) < 0)
-				fatal_err(0);
-		}
-		list = list->next;
+		if (FD_ISSET(copy->fd, &writes) && copy->id != id)
+			send(copy->fd, msg, strlen(msg), 0);
+		copy = copy->next;
 	}
 }
 
 int main(int ac, char **av)
 {
-	if (ac!= 2)
+	if (ac != 2)
 		fatal_err(1);
-	int serverfd, clientfd;
-	struct sockaddr_in servaddr;
-	size_t port;
-	int id = 0;
-	char defined[100];
-
-	bzero(&servaddr, sizeof(servaddr));
+	int servfd, clifd, port, maxfd;
+	char buffer[1024], defined[100];
+	struct sockaddr_in servaddr; 
 	port = atoi(av[1]);
-	servaddr.sin_family = AF_INET;
+	bzero(&servaddr, sizeof(servaddr)); 
+	servaddr.sin_family = AF_INET; 
 	servaddr.sin_addr.s_addr = htonl(2130706433); //127.0.0.1
-	servaddr.sin_port = htons(port);
-	if ((serverfd = socket(AF_INET, SOCK_STREAM, 0)) < 0 || bind(serverfd, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0 || listen(serverfd, 10) < 0 )
+	servaddr.sin_port = htons(port); 
+	if ((servfd = socket(AF_INET, SOCK_STREAM, 0)) < 0 || (bind(servfd, (const struct sockaddr *)&servaddr, sizeof(servaddr))) < 0 || listen(servfd, 10) < 0)
 		fatal_err(0);
 	FD_ZERO(&master);
-	FD_SET(serverfd , &master);
-	int max = serverfd;
-	char buffer[1024];
+	FD_SET(servfd, &master);
+	maxfd = servfd;
 	while (1)
 	{
 		reads = writes = master;
-		if (select(FD_SETSIZE, &reads, &writes, NULL, NULL) < 0)
-			continue ;
-		
-		for (int i = 0; i <= max; i++)
+		if (select(maxfd + 1, &reads, &writes, NULL, NULL) < 0)
+			continue;
+		if (FD_ISSET(servfd, &reads))
 		{
-			if (FD_ISSET(i , &reads))
+			clifd = accept(servfd, NULL, NULL);
+			fcntl(clifd, F_SETFL, O_NONBLOCK);	// for test
+			FD_SET(clifd, &master);
+			maxfd = (maxfd > clifd) ? maxfd : clifd;
+			sprintf(defined, "server: client %d just arrived\n", id);
+			add_cli(clifd, id);
+			broadcast(defined, id++);
+		}
+		t_cli *copy = clients;
+		while (copy)
+		{
+			if (FD_ISSET(copy->fd, &reads))
 			{
-				if (i == serverfd)
+				int ret;
+				while ((ret = recv(copy->fd, buffer, 1023, 0)) > 0)
 				{
-					if ((clientfd = accept(serverfd, NULL, NULL)) < 0)
-						fatal_err(0);
-					fcntl(clientfd, F_SETFL, O_NONBLOCK);
-					FD_SET(clientfd, &master);
-					max = clientfd > max ? clientfd : max;
-					bzero(&defined, sizeof(defined));
-					sprintf(defined, "server: client %d just arrived\n", id);
-					add_cli(clientfd, &id);
-					broadcast(id, defined);
+					buffer[ret] = 0;
+					copy->buf = str_join(copy->buf, buffer);
+				}
+				if (ret == 0)
+				{
+					sprintf(defined, "server: client %d just left\n", copy->id);
+					broadcast(defined, copy->id);
+					rm_cli(&copy);
 					break;
 				}
-				else
+				char *msg = 0;
+				while (extract_message(&copy->buf, &msg) == 1)
 				{
-					t_cli *c = find_cli(i);
-					int	ret;
-					while ((ret = recv(i, &buffer, 1023, 0)) > 0)
-					{
-						buffer[ret] = 0;
-						c->buff = str_join(c->buff, buffer);
-					}
-					if (ret == 0)
-					{
-						sprintf(defined, "server: client %d just left\n", c->id);
-						broadcast(c->id, defined);
-						rm_cli(&c);
-						break;
-					}
-					char *msg = 0;
-					while ((ret = extract_message(&c->buff, &msg)) == 1)
-					{
-						char *line = 0;
-						if (!(line = malloc(sizeof(char) * (strlen(msg) + 15))))
-							fatal_err(0);
-						sprintf(line, "client %d: %s", c->id, msg);
-						broadcast(c->id, line);
-						free(msg);
-						free(line);
-					}
-					if (ret < 0)
-						fatal_err(0);
+					char *line = 0;
+					if (!(line = malloc(sizeof(char) * strlen(msg) + 15)))
+						fatal_err(1);
+					sprintf(line, "client %d: %s", copy->id, msg);
+					broadcast(line, copy->id);
+					free(line);
+					free(msg);
 				}
 			}
+			copy = copy->next;
 		}
-		system("leaks a.out");
 	}
 }
